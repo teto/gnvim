@@ -22,16 +22,31 @@ impl<'a> Cursor<'a> {
 impl io::Read for Cursor<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let start = self.pos.min(self.inner.len());
+        let mut read = 0;
 
         let (front, back) = self.inner.as_slices();
-        let n = if start < front.len() {
-            io::Read::read(&mut (&front[start..]), buf)?
-        } else {
-            io::Read::read(&mut (&back[(start - front.len())..]), buf)?
-        };
 
-        self.pos += n;
-        std::io::Result::Ok(n)
+        // Read from front slice.
+        if start < front.len() {
+            let f = &front[start..];
+            let n = f.len().min(buf.len());
+            buf[..n].copy_from_slice(&f[..n]);
+            read += n;
+        }
+
+        // If there's still space in buf, read from back slice.
+        if read < buf.len() && start + read >= front.len() {
+            let b_start = start + read - front.len();
+            if b_start < back.len() {
+                let b = &back[b_start..];
+                let n = b.len().min(buf.len() - read);
+                buf[read..read + n].copy_from_slice(&b[..n]);
+                read += n;
+            }
+        }
+
+        self.pos += read;
+        Ok(read)
     }
 }
 
@@ -137,6 +152,25 @@ mod tests {
     };
 
     use super::Cursor;
+    #[test]
+    fn test_reads_front_and_back_at_once() {
+        let mut dq: VecDeque<u8> = VecDeque::from_iter(0..6);
+        dq.pop_front();
+        dq.pop_front();
+        dq.extend(6..8);
+
+        // Validate our test setup.
+        let (front, back) = dq.as_slices();
+        assert_eq!(front, &[2, 3, 4, 5]);
+        assert_eq!(back, &[6, 7]);
+
+        let mut cursor = Cursor::new(&mut dq);
+
+        let mut buf = vec![0u8; 6];
+        let n = cursor.read(&mut buf).unwrap();
+        assert_eq!(n, 6);
+        assert_eq!(&buf, &[2, 3, 4, 5, 6, 7])
+    }
 
     #[test]
     fn test_cursor_read_wrapping() {
